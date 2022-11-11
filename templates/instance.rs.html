@@ -7,21 +7,23 @@
     <h4 class="padded"><a href="@base">@instance.title</a></h4>
     <p class="padded">
         @if let Some(software) = software {
-            Running @software, version @instance.version.
+            Utilise @software, version @instance.version.
         }
+	<br>
         @if instance.reg {
-            <br>Registration is open.
             @if instance.requires_approval {
-                Accounts must be approved by an admin.
-            }
+                <span class="moderated">Inscriptions soumises à approbation.</span>
+            } else{
+		<span class="open">Inscriptions ouvertes.</span>
+	    }
         } else{
-            Registration is closed
+            <span class="closed">Inscriptions fermées.</span>
         }
     </p>
     @if !instance.description.trim().is_empty() || contact.is_some() {
         <div class="instance-info">
             @if !instance.description.trim().is_empty() {
-                <h5 class="instance-description">@instance.title's description:</h5>
+                <h5 class="instance-description">Description:</h5>
                 <div class="description">
                     <div class="please-stay">
                         @Html(instance.description.trim())
@@ -29,7 +31,7 @@
                 </div>
             }
             @if let Some(contact) = contact {
-                <h5 class="instance-admin">@instance.title's admin:</h5>
+                <h5 class="instance-admin">Administré par:</h5>
                 @:admin(contact, base)
             }
         </div>
