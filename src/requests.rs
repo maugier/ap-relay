@@ -1,10 +1,7 @@
 use crate::error::{Error, ErrorKind};
 use activitystreams::iri_string::types::IriString;
-use actix_web::{
-    http::{header::Date, StatusCode},
-    web::Bytes,
-};
-use awc::Client;
+use actix_web::http::header::Date;
+use awc::{error::SendRequestError, Client, ClientResponse};
 use dashmap::DashMap;
 use http_signature_normalization_actix::prelude::*;
 use rand::thread_rng;
@@ -20,7 +17,6 @@ use std::{
     },
     time::{Duration, SystemTime},
 };
-use tracing::{debug, info, warn};
 use tracing_awc::Tracing;
 
 const ONE_SECOND: u64 = 1;
@@ -57,6 +53,9 @@ impl Breakers {
             let should_write = {
                 if let Some(mut breaker) = self.inner.get_mut(authority) {
                     breaker.fail();
+                    if !breaker.should_try() {
+                        tracing::warn!("Failed breaker for {}", authority);
+                    }
                     false
                 } else {
                     true
@@ -105,17 +104,12 @@ struct Breaker {
 }
 
 impl Breaker {
-    const fn failure_threshold() -> usize {
-        10
-    }
-
-    fn failure_wait() -> Duration {
-        Duration::from_secs(ONE_DAY)
-    }
+    const FAILURE_WAIT: Duration = Duration::from_secs(ONE_DAY);
+    const FAILURE_THRESHOLD: usize = 10;
 
     fn should_try(&self) -> bool {
-        self.failures < Self::failure_threshold()
-            || self.last_attempt + Self::failure_wait() < SystemTime::now()
+        self.failures < Self::FAILURE_THRESHOLD
+            || self.last_attempt + Self::FAILURE_WAIT < SystemTime::now()
     }
 
     fn fail(&mut self) {
@@ -166,6 +160,14 @@ impl std::fmt::Debug for Requests {
     }
 }
 
+pub(crate) fn build_client(user_agent: &str) -> Client {
+    Client::builder()
+        .wrap(Tracing)
+        .add_default_header(("User-Agent", user_agent.to_string()))
+        .timeout(Duration::from_secs(15))
+        .finish()
+}
+
 impl Requests {
     pub(crate) fn new(
         key_id: String,
@@ -174,12 +176,7 @@ impl Requests {
         breakers: Breakers,
     ) -> Self {
         Requests {
-            client: Rc::new(RefCell::new(
-                Client::builder()
-                    .wrap(Tracing)
-                    .add_default_header(("User-Agent", user_agent.clone()))
-                    .finish(),
-            )),
+            client: Rc::new(RefCell::new(build_client(&user_agent))),
             consecutive_errors: Rc::new(AtomicUsize::new(0)),
             error_limit: 3,
             key_id,
@@ -190,14 +187,15 @@ impl Requests {
         }
     }
 
+    pub(crate) fn reset_breaker(&self, iri: &IriString) {
+        self.breakers.succeed(iri);
+    }
+
     fn count_err(&self) {
         let count = self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
         if count + 1 >= self.error_limit {
-            warn!("{} consecutive errors, rebuilding http client", count);
-            *self.client.borrow_mut() = Client::builder()
-                .wrap(Tracing)
-                .add_default_header(("User-Agent", self.user_agent.clone()))
-                .finish();
+            tracing::warn!("{} consecutive errors, rebuilding http client", count + 1);
+            *self.client.borrow_mut() = build_client(&self.user_agent);
             self.reset_err();
         }
     }
@@ -206,7 +204,41 @@ impl Requests {
         self.consecutive_errors.swap(0, Ordering::Relaxed);
     }
 
-    #[tracing::instrument(name = "Fetch Json", skip(self))]
+    async fn check_response(
+        &self,
+        parsed_url: &IriString,
+        res: Result<ClientResponse, SendRequestError>,
+    ) -> Result<ClientResponse, Error> {
+        if res.is_err() {
+            self.count_err();
+            self.breakers.fail(&parsed_url);
+        }
+
+        let mut res =
+            res.map_err(|e| ErrorKind::SendRequest(parsed_url.to_string(), e.to_string()))?;
+
+        self.reset_err();
+
+        if !res.status().is_success() {
+            self.breakers.fail(&parsed_url);
+
+            if let Ok(bytes) = res.body().await {
+                if let Ok(s) = String::from_utf8(bytes.as_ref().to_vec()) {
+                    if !s.is_empty() {
+                        tracing::warn!("Response from {}, {}", parsed_url, s);
+                    }
+                }
+            }
+
+            return Err(ErrorKind::Status(parsed_url.to_string(), res.status()).into());
+        }
+
+        self.breakers.succeed(&parsed_url);
+
+        Ok(res)
+    }
+
+    #[tracing::instrument(name = "Fetch Json", skip(self), fields(signing_string))]
     pub(crate) async fn fetch_json<T>(&self, url: &str) -> Result<T, Error>
     where
         T: serde::de::DeserializeOwned,
@@ -214,7 +246,7 @@ impl Requests {
         self.do_fetch(url, "application/json").await
     }
 
-    #[tracing::instrument(name = "Fetch Activity+Json", skip(self))]
+    #[tracing::instrument(name = "Fetch Activity+Json", skip(self), fields(signing_string))]
     pub(crate) async fn fetch<T>(&self, url: &str) -> Result<T, Error>
     where
         T: serde::de::DeserializeOwned,
@@ -233,6 +265,7 @@ impl Requests {
         }
 
         let signer = self.signer();
+        let span = tracing::Span::current();
 
         let client: Client = self.client.borrow().clone();
         let res = client
@@ -242,36 +275,16 @@ impl Requests {
             .signature(
                 self.config.clone(),
                 self.key_id.clone(),
-                move |signing_string| signer.sign(signing_string),
+                move |signing_string| {
+                    span.record("signing_string", signing_string);
+                    span.in_scope(|| signer.sign(signing_string))
+                },
             )
             .await?
             .send()
             .await;
 
-        if res.is_err() {
-            self.count_err();
-            self.breakers.fail(&parsed_url);
-        }
-
-        let mut res = res.map_err(|e| ErrorKind::SendRequest(url.to_string(), e.to_string()))?;
-
-        self.reset_err();
-
-        if !res.status().is_success() {
-            if let Ok(bytes) = res.body().await {
-                if let Ok(s) = String::from_utf8(bytes.as_ref().to_vec()) {
-                    if !s.is_empty() {
-                        debug!("Response from {}, {}", url, s);
-                    }
-                }
-            }
-
-            self.breakers.fail(&parsed_url);
-
-            return Err(ErrorKind::Status(url.to_string(), res.status()).into());
-        }
-
-        self.breakers.succeed(&parsed_url);
+        let mut res = self.check_response(&parsed_url, res).await?;
 
         let body = res
             .body()
@@ -281,80 +294,42 @@ impl Requests {
         Ok(serde_json::from_slice(body.as_ref())?)
     }
 
-    #[tracing::instrument(name = "Fetch Bytes", skip(self))]
-    pub(crate) async fn fetch_bytes(&self, url: &str) -> Result<(String, Bytes), Error> {
-        let parsed_url = url.parse::<IriString>()?;
-
-        if !self.breakers.should_try(&parsed_url) {
+    #[tracing::instrument(name = "Fetch response", skip(self), fields(signing_string))]
+    pub(crate) async fn fetch_response(&self, url: IriString) -> Result<ClientResponse, Error> {
+        if !self.breakers.should_try(&url) {
             return Err(ErrorKind::Breaker.into());
         }
 
-        info!("Fetching bytes for {}", url);
         let signer = self.signer();
+        let span = tracing::Span::current();
 
         let client: Client = self.client.borrow().clone();
         let res = client
-            .get(url)
+            .get(url.as_str())
             .insert_header(("Accept", "*/*"))
             .insert_header(Date(SystemTime::now().into()))
+            .no_decompress()
             .signature(
                 self.config.clone(),
                 self.key_id.clone(),
-                move |signing_string| signer.sign(signing_string),
+                move |signing_string| {
+                    span.record("signing_string", signing_string);
+                    span.in_scope(|| signer.sign(signing_string))
+                },
             )
             .await?
             .send()
             .await;
 
-        if res.is_err() {
-            self.breakers.fail(&parsed_url);
-            self.count_err();
-        }
+        let res = self.check_response(&url, res).await?;
 
-        let mut res = res.map_err(|e| ErrorKind::SendRequest(url.to_string(), e.to_string()))?;
-
-        self.reset_err();
-
-        let content_type = if let Some(content_type) = res.headers().get("content-type") {
-            if let Ok(s) = content_type.to_str() {
-                s.to_owned()
-            } else {
-                return Err(ErrorKind::ContentType.into());
-            }
-        } else {
-            return Err(ErrorKind::ContentType.into());
-        };
-
-        if !res.status().is_success() {
-            if let Ok(bytes) = res.body().await {
-                if let Ok(s) = String::from_utf8(bytes.as_ref().to_vec()) {
-                    if !s.is_empty() {
-                        debug!("Response from {}, {}", url, s);
-                    }
-                }
-            }
-
-            self.breakers.fail(&parsed_url);
-
-            return Err(ErrorKind::Status(url.to_string(), res.status()).into());
-        }
-
-        self.breakers.succeed(&parsed_url);
-
-        let bytes = match res.body().limit(1024 * 1024 * 4).await {
-            Err(e) => {
-                return Err(ErrorKind::ReceiveResponse(url.to_string(), e.to_string()).into());
-            }
-            Ok(bytes) => bytes,
-        };
-
-        Ok((content_type, bytes))
+        Ok(res)
     }
 
     #[tracing::instrument(
         "Deliver to Inbox",
         skip_all,
-        fields(inbox = inbox.to_string().as_str(), item)
+        fields(inbox = inbox.to_string().as_str(), signing_string)
     )]
     pub(crate) async fn deliver<T>(&self, inbox: IriString, item: &T) -> Result<(), Error>
     where
@@ -365,6 +340,7 @@ impl Requests {
         }
 
         let signer = self.signer();
+        let span = tracing::Span::current();
         let item_string = serde_json::to_string(item)?;
 
         let client: Client = self.client.borrow().clone();
@@ -378,39 +354,17 @@ impl Requests {
                 self.key_id.clone(),
                 Sha256::new(),
                 item_string,
-                move |signing_string| signer.sign(signing_string),
+                move |signing_string| {
+                    span.record("signing_string", signing_string);
+                    span.in_scope(|| signer.sign(signing_string))
+                },
             )
             .await?
             .split();
 
         let res = req.send_body(body).await;
 
-        if res.is_err() {
-            self.count_err();
-            self.breakers.fail(&inbox);
-        }
-
-        let mut res = res.map_err(|e| ErrorKind::SendRequest(inbox.to_string(), e.to_string()))?;
-
-        self.reset_err();
-
-        if !res.status().is_success() {
-            // Bad Request means the server didn't understand our activity - that's fine
-            if res.status() != StatusCode::BAD_REQUEST {
-                if let Ok(bytes) = res.body().await {
-                    if let Ok(s) = String::from_utf8(bytes.as_ref().to_vec()) {
-                        if !s.is_empty() {
-                            warn!("Response from {}, {}", inbox.as_str(), s);
-                        }
-                    }
-                }
-
-                self.breakers.fail(&inbox);
-                return Err(ErrorKind::Status(inbox.to_string(), res.status()).into());
-            }
-        }
-
-        self.breakers.succeed(&inbox);
+        self.check_response(&inbox, res).await?;
 
         Ok(())
     }

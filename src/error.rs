@@ -7,12 +7,25 @@ use actix_web::{
 };
 use http_signature_normalization_actix::PrepareSignError;
 use std::{convert::Infallible, fmt::Debug, io};
-use tracing::error;
 use tracing_error::SpanTrace;
 
 pub(crate) struct Error {
     context: SpanTrace,
     kind: ErrorKind,
+}
+
+impl Error {
+    pub(crate) fn is_breaker(&self) -> bool {
+        matches!(self.kind, ErrorKind::Breaker)
+    }
+
+    pub(crate) fn is_not_found(&self) -> bool {
+        matches!(self.kind, ErrorKind::Status(_, StatusCode::NOT_FOUND))
+    }
+
+    pub(crate) fn is_bad_request(&self) -> bool {
+        matches!(self.kind, ErrorKind::Status(_, StatusCode::BAD_REQUEST))
+    }
 }
 
 impl std::fmt::Debug for Error {
@@ -117,9 +130,6 @@ pub(crate) enum ErrorKind {
     #[error("{0}")]
     HostMismatch(#[from] CheckError),
 
-    #[error("Invalid or missing content type")]
-    ContentType,
-
     #[error("Couldn't flush buffer")]
     FlushBuffer,
 
@@ -164,6 +174,9 @@ pub(crate) enum ErrorKind {
 
     #[error("Failed to extract fields from {0}")]
     Extract(&'static str),
+
+    #[error("No API Token supplied")]
+    MissingApiToken,
 }
 
 impl ResponseError for Error {

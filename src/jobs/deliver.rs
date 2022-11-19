@@ -1,4 +1,7 @@
-use crate::{error::Error, jobs::JobState};
+use crate::{
+    error::Error,
+    jobs::{debug_object, JobState},
+};
 use activitystreams::iri_string::types::IriString;
 use background_jobs::{ActixJob, Backoff};
 use std::{future::Future, pin::Pin};
@@ -13,7 +16,8 @@ impl std::fmt::Debug for Deliver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Deliver")
             .field("to", &self.to.to_string())
-            .field("data", &self.data)
+            .field("activity", &self.data["type"])
+            .field("object", debug_object(&self.data))
             .finish()
     }
 }
@@ -31,7 +35,17 @@ impl Deliver {
 
     #[tracing::instrument(name = "Deliver", skip(state))]
     async fn permform(self, state: JobState) -> Result<(), Error> {
-        state.requests.deliver(self.to, &self.data).await?;
+        if let Err(e) = state.requests.deliver(self.to, &self.data).await {
+            if e.is_breaker() {
+                tracing::debug!("Not trying due to failed breaker");
+                return Ok(());
+            }
+            if e.is_bad_request() {
+                tracing::debug!("Server didn't understand the activity");
+                return Ok(());
+            }
+            return Err(e);
+        }
         Ok(())
     }
 }

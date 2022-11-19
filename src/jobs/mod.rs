@@ -1,5 +1,4 @@
 pub mod apub;
-mod cache_media;
 mod contact;
 mod deliver;
 mod deliver_many;
@@ -8,7 +7,7 @@ mod nodeinfo;
 mod process_listeners;
 
 pub(crate) use self::{
-    cache_media::CacheMedia, contact::QueryContact, deliver::Deliver, deliver_many::DeliverMany,
+    contact::QueryContact, deliver::Deliver, deliver_many::DeliverMany,
     instance::QueryInstance, nodeinfo::QueryNodeinfo,
 };
 
@@ -24,6 +23,20 @@ use background_jobs::{
     Job, Manager, QueueHandle, WorkerConfig,
 };
 use std::time::Duration;
+
+fn debug_object(activity: &serde_json::Value) -> &serde_json::Value {
+    let mut object = &activity["object"]["type"];
+
+    if object.is_null() {
+        object = &activity["object"]["id"];
+    }
+
+    if object.is_null() {
+        object = &activity["object"];
+    }
+
+    object
+}
 
 pub(crate) fn create_workers(
     state: State,
@@ -45,7 +58,6 @@ pub(crate) fn create_workers(
     .register::<QueryNodeinfo>()
     .register::<QueryInstance>()
     .register::<Listeners>()
-    .register::<CacheMedia>()
     .register::<QueryContact>()
     .register::<apub::Announce>()
     .register::<apub::Follow>()
@@ -122,5 +134,61 @@ impl JobServer {
             .await
             .map_err(ErrorKind::Queue)
             .map_err(Into::into)
+    }
+}
+
+struct Boolish {
+    inner: bool,
+}
+
+impl std::ops::Deref for Boolish {
+    type Target = bool;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Boolish {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum BoolThing {
+            Bool(bool),
+            String(String),
+        }
+
+        let thing: BoolThing = serde::Deserialize::deserialize(deserializer)?;
+
+        match thing {
+            BoolThing::Bool(inner) => Ok(Boolish { inner }),
+            BoolThing::String(s) if s.to_lowercase() == "false" => Ok(Boolish { inner: false }),
+            BoolThing::String(_) => Ok(Boolish { inner: true }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Boolish;
+
+    #[test]
+    fn boolish_works() {
+        const CASES: &[(&str, bool)] = &[
+            ("false", false),
+            ("\"false\"", false),
+            ("\"FALSE\"", false),
+            ("true", true),
+            ("\"true\"", true),
+            ("\"anything else\"", true),
+        ];
+
+        for (case, output) in CASES {
+            let b: Boolish = serde_json::from_str(case).unwrap();
+            assert_eq!(*b, *output);
+        }
     }
 }
