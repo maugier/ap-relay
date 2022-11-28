@@ -14,8 +14,9 @@ use activitystreams::{
 };
 use config::Environment;
 use http_signature_normalization_actix::prelude::{VerifyDigest, VerifySignature};
+use rustls::{Certificate, PrivateKey};
 use sha2::{Digest, Sha256};
-use std::{net::IpAddr, path::PathBuf};
+use std::{io::BufReader, net::IpAddr, path::PathBuf};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -34,6 +35,11 @@ pub(crate) struct ParsedConfig {
     telegram_token: Option<String>,
     telegram_admin_handle: Option<String>,
     api_token: Option<String>,
+    tls_key: Option<PathBuf>,
+    tls_cert: Option<PathBuf>,
+    footer_blurb: Option<String>,
+    local_domains: Option<String>,
+    local_blurb: Option<String>,
 }
 
 #[derive(Clone)]
@@ -52,6 +58,16 @@ pub struct Config {
     telegram_token: Option<String>,
     telegram_admin_handle: Option<String>,
     api_token: Option<String>,
+    tls: Option<TlsConfig>,
+    footer_blurb: Option<String>,
+    local_domains: Vec<String>,
+    local_blurb: Option<String>,
+}
+
+#[derive(Clone)]
+struct TlsConfig {
+    key: PathBuf,
+    cert: PathBuf,
 }
 
 #[derive(Debug)]
@@ -77,6 +93,7 @@ pub enum AdminUrlKind {
     Allowed,
     Blocked,
     Connected,
+    Stats,
 }
 
 impl std::fmt::Debug for Config {
@@ -99,6 +116,11 @@ impl std::fmt::Debug for Config {
             .field("telegram_token", &"[redacted]")
             .field("telegram_admin_handle", &self.telegram_admin_handle)
             .field("api_token", &"[redacted]")
+            .field("tls_key", &"[redacted]")
+            .field("tls_cert", &"[redacted]")
+            .field("footer_blurb", &self.footer_blurb)
+            .field("local_domains", &self.local_domains)
+            .field("local_blurb", &self.local_blurb)
             .finish()
     }
 }
@@ -111,8 +133,8 @@ impl Config {
             .set_default("port", 8080u64)?
             .set_default("debug", true)?
             .set_default("restricted_mode", false)?
-            .set_default("validate_signatures", false)?
-            .set_default("https", false)?
+            .set_default("validate_signatures", true)?
+            .set_default("https", true)?
             .set_default("publish_blocks", false)?
             .set_default("sled_path", "./sled/db-0-34")?
             .set_default("source_repo", "https://git.asonix.dog/asonix/relay")?
@@ -120,6 +142,11 @@ impl Config {
             .set_default("telegram_token", None as Option<&str>)?
             .set_default("telegram_admin_handle", None as Option<&str>)?
             .set_default("api_token", None as Option<&str>)?
+            .set_default("tls_key", None as Option<&str>)?
+            .set_default("tls_cert", None as Option<&str>)?
+            .set_default("footer_blurb", None as Option<&str>)?
+            .set_default("local_domains", None as Option<&str>)?
+            .set_default("local_blurb", None as Option<&str>)?
             .add_source(Environment::default())
             .build()?;
 
@@ -127,6 +154,26 @@ impl Config {
 
         let scheme = if config.https { "https" } else { "http" };
         let base_uri = iri!(format!("{}://{}", scheme, config.hostname)).into_absolute();
+
+        let tls = match (config.tls_key, config.tls_cert) {
+            (Some(key), Some(cert)) => Some(TlsConfig { key, cert }),
+            (Some(_), None) => {
+                tracing::warn!("TLS_KEY is set but TLS_CERT isn't , not building TLS config");
+                None
+            }
+            (None, Some(_)) => {
+                tracing::warn!("TLS_CERT is set but TLS_KEY isn't , not building TLS config");
+                None
+            }
+            (None, None) => None,
+        };
+
+        let local_domains = config
+            .local_domains
+            .iter()
+            .flat_map(|s| s.split(','))
+            .map(|d| d.to_string())
+            .collect();
 
         Ok(Config {
             hostname: config.hostname,
@@ -143,7 +190,74 @@ impl Config {
             telegram_token: config.telegram_token,
             telegram_admin_handle: config.telegram_admin_handle,
             api_token: config.api_token,
+            tls,
+            footer_blurb: config.footer_blurb,
+            local_domains,
+            local_blurb: config.local_blurb,
         })
+    }
+
+    pub(crate) fn open_keys(&self) -> Result<Option<(Vec<Certificate>, PrivateKey)>, Error> {
+        let tls = if let Some(tls) = &self.tls {
+            tls
+        } else {
+            tracing::warn!("No TLS config present");
+            return Ok(None);
+        };
+
+        let mut certs_reader = BufReader::new(std::fs::File::open(&tls.cert)?);
+        let certs = rustls_pemfile::certs(&mut certs_reader)?;
+
+        if certs.is_empty() {
+            tracing::warn!("No certs read from certificate file");
+            return Ok(None);
+        }
+
+        let mut key_reader = BufReader::new(std::fs::File::open(&tls.key)?);
+        let key = rustls_pemfile::read_one(&mut key_reader)?;
+
+        let certs = certs.into_iter().map(Certificate).collect();
+
+        let key = if let Some(key) = key {
+            match key {
+                rustls_pemfile::Item::RSAKey(der) => PrivateKey(der),
+                rustls_pemfile::Item::PKCS8Key(der) => PrivateKey(der),
+                rustls_pemfile::Item::ECKey(der) => PrivateKey(der),
+                _ => {
+                    tracing::warn!("Unknown key format: {:?}", key);
+                    return Ok(None);
+                }
+            }
+        } else {
+            tracing::warn!("Failed to read private key");
+            return Ok(None);
+        };
+
+        Ok(Some((certs, key)))
+    }
+
+    pub(crate) fn footer_blurb(&self) -> Option<crate::templates::Html<String>> {
+        if let Some(blurb) = &self.footer_blurb {
+            if !blurb.is_empty() {
+                return Some(crate::templates::Html(ammonia::clean(blurb)));
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn local_blurb(&self) -> Option<crate::templates::Html<String>> {
+        if let Some(blurb) = &self.local_blurb {
+            if !blurb.is_empty() {
+                return Some(crate::templates::Html(ammonia::clean(blurb)));
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn local_domains(&self) -> &[String] {
+        &self.local_domains
     }
 
     pub(crate) fn sled_path(&self) -> &PathBuf {
@@ -338,6 +452,8 @@ impl Config {
                 .try_resolve(IriRelativeStr::new("api/v1/admin/blocked")?.as_ref())?,
             AdminUrlKind::Connected => FixedBaseResolver::new(self.base_uri.as_ref())
                 .try_resolve(IriRelativeStr::new("api/v1/admin/connected")?.as_ref())?,
+            AdminUrlKind::Stats => FixedBaseResolver::new(self.base_uri.as_ref())
+                .try_resolve(IriRelativeStr::new("api/v1/admin/stats")?.as_ref())?,
         };
 
         Ok(iri)

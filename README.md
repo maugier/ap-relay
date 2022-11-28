@@ -10,7 +10,7 @@ $ sudo docker run --rm -it \
     -e ADDR=0.0.0.0 \
     -e SLED_PATH=/mnt/sled/db-0.34 \
     -p 8080:8080 \
-    asonix/relay:0.3.23
+    asonix/relay:0.3.52
 ```
 This will launch the relay with the database stored in "./sled/db-0.34" and listening on port 8080
 #### Cargo
@@ -98,6 +98,11 @@ API_TOKEN=somepasswordishtoken
 OPENTELEMETRY_URL=localhost:4317
 TELEGRAM_TOKEN=secret
 TELEGRAM_ADMIN_HANDLE=your_handle
+TLS_KEY=/path/to/key
+TLS_CERT=/path/to/cert
+FOOTER_BLURB="Contact <a href=\"https://masto.asonix.dog/@asonix\">@asonix</a> for inquiries"
+LOCAL_DOMAINS=masto.asonix.dog
+LOCAL_BLURB="<p>Welcome to my cool relay where I have cool relay things happening. I hope you enjoy your stay!</p>"
 ```
 
 #### Descriptions
@@ -112,15 +117,15 @@ Whether to print incoming activities to the console when requests hit the /inbox
 ##### `RESTRICTED_MODE`
 This setting enables an 'allowlist' setup where only servers that have been explicitly enabled through the `relay -a` command can join the relay. This is `false` by default. If `RESTRICTED_MODE` is not enabled, then manually allowing domains with `relay -a` has no effect.
 ##### `VALIDATE_SIGNATURES`
-This setting enforces checking HTTP signatures on incoming activities. It defaults to `false` but should be set to `true` in production scenarios
+This setting enforces checking HTTP signatures on incoming activities. It defaults to `true`
 ##### `HTTPS`
-Whether the current server is running on an HTTPS port or not. This is used for generating URLs to the current running relay. By default it is set to `false`, but should be `true` in production scenarios.
+Whether the current server is running on an HTTPS port or not. This is used for generating URLs to the current running relay. By default it is set to `true`
 ##### `PUBLISH_BLOCKS`
 Whether or not to publish a list of blocked domains in the `nodeinfo` metadata for the server. It defaults to `false`.
 ##### `SLED_PATH`
 Where to store the on-disk database of connected servers. This defaults to `./sled/db-0.34`.
 ##### `RUST_LOG`
-The log level to print. Available levels are `ERROR`, `WARN`, `INFO`, `DEBUG`, and `TRACE`. You can also specify module paths to enable some logs but not others, such as `RUST_LOG=warn,tracing_actix_web=info,relay=info`
+The log level to print. Available levels are `ERROR`, `WARN`, `INFO`, `DEBUG`, and `TRACE`. You can also specify module paths to enable some logs but not others, such as `RUST_LOG=warn,tracing_actix_web=info,relay=info`. This defaults to `warn`
 ##### `SOURCE_REPO`
 The URL to the source code for the relay. This defaults to `https://git.asonix.dog/asonix/relay`, but should be changed if you're running a fork hosted elsewhere.
 ##### `API_TOKEN`
@@ -131,6 +136,16 @@ A URL for exporting opentelemetry spans. This is mostly useful for debugging. Th
 A Telegram Bot Token for running the relay administration bot. There is no default.
 ##### `TELEGRAM_ADMIN_HANDLE`
 The handle of the telegram user allowed to administer the relay. There is no default.
+##### `TLS_KEY`
+Optional - This is specified if you are running the relay directly on the internet and have a TLS key to provide HTTPS for your relay
+##### `TLS_CERT`
+Optional - This is specified if you are running the relay directly on the internet and have a TLS certificate chain to provide HTTPS for your relay
+##### `FOOTER_BLURB`
+Optional - Add custom notes in the footer of the page
+##### `LOCAL_DOMAINS`
+Optional - domains of mastodon servers run by the same admin as the relay
+##### `LOCAL_BLURB`
+Optional - description for the relay
 
 ### Subscribing
 Mastodon admins can subscribe to this relay by adding the `/inbox` route to their relay settings.

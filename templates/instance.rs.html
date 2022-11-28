@@ -3,17 +3,17 @@
 
 @(instance: &Instance, software: Option<&str>, contact: Option<&Contact>, base: &IriString)
 
-<article class="instance">
-    <h4 class="padded"><a href="@base">@instance.title</a></h4>
-    <p class="padded">
+    <section class="instance">
+      <h4 class="padded"><a href="@base">@instance.title</a></h4>
+      <p class="padded">
         @if let Some(software) = software {
-            Utilise @software, version @instance.version.
+        Utilise @software, version @instance.version.
         }
 	<br>
         @if instance.reg {
             @if instance.requires_approval {
                 <span class="moderated">Inscriptions soumises à approbation.</span>
-            } else{
+            } else {
 		<span class="open">Inscriptions ouvertes.</span>
 	    }
         } else{
@@ -35,5 +35,9 @@
                 @:admin(contact, base)
             }
         </div>
-    }
-</article>
+        @if let Some(contact) = contact {
+        <h5 class="instance-admin">@instance.title's admin:</h5>
+        @:admin(contact, base)
+        }
+      }
+    </section>

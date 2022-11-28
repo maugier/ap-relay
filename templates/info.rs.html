@@ -3,14 +3,14 @@
 
 @(info: &Info, base: &IriString)
 
-<article class="info">
-    @if let Some(authority) = base.authority_str() {
-        <h4 class="padded"><a href="@base">@authority</a></h4>
+<section class="info">
+  @if let Some(authority) = base.authority_str() {
+  <h4 class="padded"><a href="@base">@authority</a></h4>
+  }
+  <p class="padded">
+    Utilise @info.software, version @info.version.
+    @if info.reg {
+    Inscriptions ouvertes
     }
-    <p class="padded">
-        Utilise @info.software, version @info.version.
-        @if info.reg {
-            Enregistrement ouvert.
-        }
-    </p>
-</article>
+  </p>
+</section>

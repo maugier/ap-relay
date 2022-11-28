@@ -4,7 +4,7 @@ data::Node,
 templates::{info, instance, statics::index_css},
 };
 
-@(nodes: &[Node], config: &Config)
+@(local: &[Node], nodes: &[Node], config: &Config)
 
 <!doctype html>
 <html>
@@ -24,16 +24,23 @@ templates::{info, instance, statics::index_css},
     </div>
   </header>
   <main>
-    <section>
-      <h3>@nodes.len() instances fédérées.</h3>
-      @if nodes.is_empty() {
-      <p>Aucune instance fédérée en ce moment.</p>
-      } else {
+    @if !local.is_empty() || config.local_blurb().is_some() {
+    <article>
+      <h3>About</h3>
+      <section class="local-explainer">
+        @if let Some(blurb) = config.local_blurb() {
+        @blurb
+        } else {
+        <p>Ces domaines sont administrés par la même équipe que ce relais.</p>
+        }
+      </section>
+      @if !local.is_empty() {
       <ul>
-        @for node in nodes {
+        @for node in local {
         @if let Some(inst) = node.instance.as_ref() {
         <li>
-          @:instance(inst, node.info.as_ref().map(|info| { info.software.as_ref() }), node.contact.as_ref(), &node.base)
+          @:instance(inst, node.info.as_ref().map(|info| { info.software.as_ref() }), node.contact.as_ref(),
+          &node.base)
         </li>
         } else {
         @if let Some(inf) = node.info.as_ref() {
@@ -45,10 +52,11 @@ templates::{info, instance, statics::index_css},
         }
       </ul>
       }
-    </section>
-    <section>
-      <a name="#joining"><h3>Rejoindre</h3></a>
-      <article class="joining">
+    </article>
+    }
+    <article>
+      <a name="#joining"><h3>Joining</h3></a>
+      <section class="joining">
         @if config.restricted_mode() {
         <h4>
           Ce relais est restreint.
@@ -77,10 +85,34 @@ templates::{info, instance, statics::index_css},
         <p>
 	  Vérifiez la documentation de votre installation, qui suit probablement la convention de Mastodon ou de Pleroma.
         </p>
-      </article>
-    </section>
+      </section>
+    </article>
+    @if !nodes.is_empty() {
+    <article>
+      <h3>@nodes.len() Connected Servers</h3>
+      <ul>
+        @for node in nodes {
+        @if let Some(inst) = node.instance.as_ref() {
+        <li>
+          @:instance(inst, node.info.as_ref().map(|info| { info.software.as_ref() }), node.contact.as_ref(),
+          &node.base)
+        </li>
+        } else {
+        @if let Some(inf) = node.info.as_ref() {
+        <li>
+          @:info(inf, &node.base)
+        </li>
+        }
+        }
+        }
+      </ul>
+    </article>
+    }
   </main>
   <footer>
+    @if let Some(blurb) = config.footer_blurb() {
+    <div>@blurb</div>
+    }
     <p>
       Code source de l'application disponible ici:
       <a href="@config.source_code()">@config.source_code()</a>

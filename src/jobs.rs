@@ -7,8 +7,8 @@ mod nodeinfo;
 mod process_listeners;
 
 pub(crate) use self::{
-    contact::QueryContact, deliver::Deliver, deliver_many::DeliverMany,
-    instance::QueryInstance, nodeinfo::QueryNodeinfo,
+    contact::QueryContact, deliver::Deliver, deliver_many::DeliverMany, instance::QueryInstance,
+    nodeinfo::QueryNodeinfo,
 };
 
 use crate::{
@@ -22,7 +22,7 @@ use background_jobs::{
     memory_storage::{ActixTimer, Storage},
     Job, Manager, QueueHandle, WorkerConfig,
 };
-use std::time::Duration;
+use std::{convert::TryFrom, num::NonZeroUsize, time::Duration};
 
 fn debug_object(activity: &serde_json::Value) -> &serde_json::Value {
     let mut object = &activity["object"]["type"];
@@ -44,6 +44,9 @@ pub(crate) fn create_workers(
     media: MediaCache,
     config: Config,
 ) -> (Manager, JobServer) {
+    let parallelism = std::thread::available_parallelism()
+        .unwrap_or_else(|_| NonZeroUsize::try_from(1).expect("nonzero"));
+
     let shared = WorkerConfig::new_managed(Storage::new(ActixTimer), move |queue_handle| {
         JobState::new(
             state.clone(),
@@ -64,8 +67,10 @@ pub(crate) fn create_workers(
     .register::<apub::Forward>()
     .register::<apub::Reject>()
     .register::<apub::Undo>()
-    .set_worker_count("default", 16)
-    .start();
+    .set_worker_count("maintenance", 2)
+    .set_worker_count("apub", 2)
+    .set_worker_count("deliver", 8)
+    .start_with_threads(parallelism);
 
     shared.every(Duration::from_secs(60 * 5), Listeners);
 
