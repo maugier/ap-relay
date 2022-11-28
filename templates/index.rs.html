@@ -25,8 +25,7 @@ templates::{info, instance, statics::index_css},
   </header>
   <main>
     <section>
-      <h3>@nodes.len() instances fédérées</h3>
-      <h3>@nodes.len() Connected Servers</h3>
+      <h3>@nodes.len() instances fédérées.</h3>
       @if nodes.is_empty() {
       <p>Aucune instance fédérée en ce moment.</p>
       } else {
@@ -48,7 +47,7 @@ templates::{info, instance, statics::index_css},
       }
     </section>
     <section>
-      <h3>Rejoindre</h3>
+      <a name="#joining"><h3>Rejoindre</h3></a>
       <article class="joining">
         @if config.restricted_mode() {
         <h4>
