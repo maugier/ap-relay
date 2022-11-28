@@ -12,7 +12,7 @@ templates::{info, instance, statics::index_css},
 <head lang="en">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>@config.hostname() | ActivityPub Relay</title>
+  <title>@config.hostname() | Relais ActivityPub</title>
   <link rel="stylesheet" href="/static/@index_css.name" type="text/css" />
 </head>
 
@@ -26,10 +26,10 @@ templates::{info, instance, statics::index_css},
   <main>
     @if !local.is_empty() || config.local_blurb().is_some() {
     <article>
-      <h3>About</h3>
+      <h3>A Propos</h3>
       <section class="local-explainer">
         @if let Some(blurb) = config.local_blurb() {
-        @blurb
+           @blurb
         } else {
         <p>Ces domaines sont administrés par la même équipe que ce relais.</p>
         }
@@ -55,7 +55,7 @@ templates::{info, instance, statics::index_css},
     </article>
     }
     <article>
-      <a name="#joining"><h3>Joining</h3></a>
+      <a name="#joining"><h3>Rejoindre</h3></a>
       <section class="joining">
         @if config.restricted_mode() {
         <h4>
