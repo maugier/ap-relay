@@ -10,12 +10,12 @@
         Running @software, version @instance.version.
         }
         @if instance.reg {
-        <br>Registration is open.
+        <br><span class="reg-open">Registration is open.</span>
         @if instance.requires_approval {
-        Accounts must be approved by an admin.
+        <span class="reg-moderated">Accounts must be approved by an admin.</span>
         }
         } else{
-        Registration is closed
+        <span class="reg-closed">Registration is closed</span>
         }
       </p>
       @if !instance.description.trim().is_empty() || contact.is_some() {
